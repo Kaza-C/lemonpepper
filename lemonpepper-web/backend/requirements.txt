@@ -13,4 +13,7 @@ textual_slider
 vosk
 webrtcvad
 pvorca
-aiohttp 
+aiohttp
+fastapi==0.109.2
+uvicorn==0.27.1
+python-multipart==0.0.9 

@@ -1,343 +1,264 @@
-import traceback
-try:
-    from flask import Flask, request, jsonify, Response
-    from flask_cors import CORS
-    import os
-    import json
-    import threading
-    import time
-    import logging
-    import sounddevice as sd
-    import numpy as np
-    import ollama
-    import queue
-    import appdirs
-    import sys
-    sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
-    from lemonpepper.transcribe_audio_whisper import WhisperStreamTranscriber
-    from lemonpepper.ollama_api import OllamaAPI
-    from lemonpepper.utils import get_model_directory
-except Exception:
-    print("IMPORT ERROR:")
-    traceback.print_exc()
-    exit(1)
-
-print("Python path:", sys.path)
-print("Python executable:", sys.executable)
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import os
+import json
+import threading
+import time
+import logging
+import sounddevice as sd
+import numpy as np
+import ollama
+import queue
+import appdirs
+import sys
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
+from lemonpepper.transcribe_audio_whisper import WhisperStreamTranscriber
+from lemonpepper.ollama_api import OllamaAPI
+from lemonpepper.utils import get_model_directory
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__)
-logger.debug("Flask app created")
+app = FastAPI()
 
-CORS(app, resources={
-    r"/*": {
-        "origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5000", "http://127.0.0.1:5000"],
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
-    }
-})
-logger.debug("CORS configured")
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Global state
 transcriber = None
 ollama_api = None
-audio_queue = queue.Queue(maxsize=100)
-transcription_buffer = []
-audio_levels = [float('-inf')] * 2
-peak_levels = [float('-inf')] * 2
-audio_lock = threading.Lock()
-is_transcribing = False
-transcription_thread = None
-processing_thread = None
-stop_event = threading.Event()
-settings = {
-    'ollama_host': 'http://localhost:11434',
-    'ollama_model': 'llama3.2',
-    'transcription_method': 'whisper',
-    'whisper_model_path': None,
-    'device_index': None,
-    'gain': 1.0,
-    'prompt_template': 'default',
-    'picovoice_access_key': ''
-}
+audio_queue = queue.Queue()
+is_recording = False
+current_transcription = ""
+current_llm_response = ""
+
+# Pydantic models for request/response validation
+class Settings(BaseModel):
+    ollama_host: str | None = None
+    ollama_model: str | None = None
+    device_index: int | None = None
+    transcription_method: str | None = None
+    whisper_model_path: str | None = None
+    gain: float | None = None
+    prompt_template: str | None = None
+    picovoice_access_key: str | None = None
 
 def get_settings_path():
-    app_data_dir = appdirs.user_data_dir("lemonpepper-web", "lemonpepper")
+    app_data_dir = appdirs.user_data_dir("lemonpepper", "lemonpepper")
     os.makedirs(app_data_dir, exist_ok=True)
     return os.path.join(app_data_dir, "settings.json")
 
-def save_settings():
+def save_settings(new_settings: dict):
     settings_path = get_settings_path()
     with open(settings_path, 'w') as f:
-        json.dump(settings, f)
+        json.dump(new_settings, f)
     logger.info(f"Settings saved to {settings_path}")
 
-def load_settings():
+def load_settings() -> dict:
     settings_path = get_settings_path()
     if os.path.exists(settings_path):
         try:
             with open(settings_path, 'r') as f:
                 loaded_settings = json.load(f)
-                settings.update(loaded_settings)
-            logger.info(f"Settings loaded from {settings_path}")
+                logger.info(f"Settings loaded from {settings_path}")
+                return loaded_settings
         except Exception as e:
             logger.error(f"Error loading settings: {e}")
+            return {}
+    return {}
 
 def audio_callback(indata, frames, time, status):
     if status:
         logger.warning(f"Audio callback status: {status}")
-    
-    # Calculate RMS for each channel
-    rms_levels = [np.sqrt(np.mean(indata[:, i]**2)) for i in range(indata.shape[1])]
-    # Convert to dB, avoiding log(0)
-    db_levels = [20 * np.log10(max(level, 1e-7)) for level in rms_levels]
-    
-    with audio_lock:
-        global audio_levels, peak_levels
-        audio_levels = db_levels
-        peak_levels = [max(current, peak) for current, peak in zip(db_levels, peak_levels)]
-    
-    # Add audio data to queue for processing
-    audio_queue.put(np.frombuffer(indata, dtype=np.float32))
-
-def transcription_worker():
-    global transcription_buffer
-    
-    while not stop_event.is_set():
-        if transcriber and is_transcribing:
-            try:
-                # Process audio in the queue
-                if not audio_queue.empty():
-                    audio_data = audio_queue.get(timeout=0.1)
-                    # This would be handled differently based on the transcription method
-                    # For now, we're simulating the transcription
-                    if ollama_api:
-                        ollama_api.add_transcription("Simulated transcription")
-            except queue.Empty:
-                pass
-            except Exception as e:
-                logger.error(f"Error in transcription worker: {e}")
-        time.sleep(0.1)
-
-def processing_worker():
-    while not stop_event.is_set():
-        if ollama_api:
-            should_process, metrics = ollama_api.should_process()
-            if should_process:
-                try:
-                    logger.info("Processing transcription")
-                    ollama_api.process_transcription()
-                except Exception as e:
-                    logger.error(f"Error processing transcription: {e}")
-        time.sleep(1)  # Check every second
-
-def initialize_transcriber():
-    global transcriber
-    
-    if settings['transcription_method'] == 'whisper':
-        model_dir = get_model_directory()
-        model_path = os.path.join(model_dir, f"{settings['whisper_model_path']}.bin")
-        
-        if os.path.exists(model_path):
-            logger.info(f"Initializing WhisperStreamTranscriber with model: {model_path}")
-            transcriber = WhisperStreamTranscriber(model_path)
-        else:
-            logger.error(f"Whisper model not found at {model_path}")
-    else:
-        # Handle other transcription methods
-        logger.warning("Only whisper transcription is currently supported")
+    if is_recording:
+        audio_queue.put(indata.copy())
 
 def initialize_ollama_api():
     global ollama_api
+    settings = load_settings()
+    if not settings.get('ollama_host') or not settings.get('ollama_model'):
+        logger.warning("Ollama settings not configured")
+        return
     
     try:
-        logger.info(f"Initializing OllamaAPI with host: {settings['ollama_host']} and model: {settings['ollama_model']}")
-        ollama_api = OllamaAPI(host=settings['ollama_host'], model=settings['ollama_model'])
-        logger.info("OllamaAPI initialized successfully")
+        ollama_api = OllamaAPI(
+            host=settings['ollama_host'],
+            model=settings['ollama_model']
+        )
+        logger.info("Ollama API initialized successfully")
     except Exception as e:
-        logger.error(f"Failed to initialize OllamaAPI: {e}", exc_info=True)
-        # Don't raise the exception, just log it and continue
-        ollama_api = None
+        logger.error(f"Failed to initialize Ollama API: {e}")
+        raise
+
+def initialize_transcriber():
+    global transcriber
+    settings = load_settings()
+    if not settings.get('transcription_method'):
+        logger.warning("Transcription method not configured")
+        return
+    
+    try:
+        if settings['transcription_method'] == 'whisper':
+            model_path = settings.get('whisper_model_path')
+            if not model_path:
+                model_path = os.path.join(get_model_directory(), "whisper", "base.en")
+            
+            transcriber = WhisperStreamTranscriber(
+                model_path=model_path,
+                device="cpu"
+            )
+            logger.info("Whisper transcriber initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize transcriber: {e}")
+        raise
 
 def start_services():
-    global transcription_thread, processing_thread, is_transcribing
+    global is_recording
+    settings = load_settings()
     
-    if not transcription_thread or not transcription_thread.is_alive():
-        stop_event.clear()
-        transcription_thread = threading.Thread(target=transcription_worker, daemon=True)
-        transcription_thread.start()
-    
-    if not processing_thread or not processing_thread.is_alive():
-        processing_thread = threading.Thread(target=processing_worker, daemon=True)
-        processing_thread.start()
-    
-    is_transcribing = True
+    if settings.get('device_index') is not None:
+        try:
+            sd.InputStream(
+                device=settings['device_index'],
+                channels=2,
+                callback=audio_callback,
+                blocksize=1024,
+                samplerate=16000
+            ).start()
+            is_recording = True
+            logger.info("Audio recording started")
+        except Exception as e:
+            logger.error(f"Failed to start audio recording: {e}")
+            raise
 
 def stop_services():
-    global is_transcribing
-    
-    is_transcribing = False
-    stop_event.set()
-    
-    if transcription_thread and transcription_thread.is_alive():
-        transcription_thread.join(timeout=2)
-    
-    if processing_thread and processing_thread.is_alive():
-        processing_thread.join(timeout=2)
+    global is_recording
+    is_recording = False
+    logger.info("Services stopped")
 
 # API Routes
-@app.route('/api/settings', methods=['GET'])
-def get_settings():
-    return jsonify(settings)
-
-@app.route('/api/settings', methods=['POST'])
-def update_settings():
-    new_settings = request.json
-    settings.update(new_settings)
-    save_settings()
-    
-    # Reinitialize components if necessary
-    if 'ollama_host' in new_settings or 'ollama_model' in new_settings:
-        initialize_ollama_api()
-    
-    if 'transcription_method' in new_settings or 'whisper_model_path' in new_settings:
-        initialize_transcriber()
-    
-    return jsonify({"status": "success", "settings": settings})
-
-@app.route('/api/audio/devices', methods=['GET'])
-def get_audio_devices():
+@app.get("/api/settings")
+async def get_settings():
     try:
-        devices = sd.query_devices()
-        return jsonify({
-            "devices": [
-                {
-                    "id": i,
-                    "name": device['name'],
-                    "input_channels": device['max_input_channels'],
-                    "output_channels": device['max_output_channels']
-                }
-                for i, device in enumerate(devices)
-            ]
-        })
+        settings = load_settings()
+        logger.debug(f"Returning settings: {settings}")
+        return settings
     except Exception as e:
-        logger.error(f"Error getting audio devices: {e}")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Error loading settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/audio/start', methods=['POST'])
-def start_audio():
+@app.post("/api/settings")
+async def update_settings(settings: Settings):
     try:
-        device_index = request.json.get('device_index', None)
-        if device_index is not None:
-            settings['device_index'] = device_index
-            save_settings()
+        current_settings = load_settings()
+        new_settings = settings.dict(exclude_unset=True)
+        current_settings.update(new_settings)
+        save_settings(current_settings)
         
-        # Initialize components if not already done
-        if not transcriber:
-            initialize_transcriber()
-        
-        if not ollama_api:
+        # Reinitialize components if necessary
+        if 'ollama_host' in new_settings or 'ollama_model' in new_settings:
             initialize_ollama_api()
         
-        # Start the input stream
-        input_stream = sd.InputStream(
-            callback=audio_callback,
+        if 'transcription_method' in new_settings or 'whisper_model_path' in new_settings:
+            initialize_transcriber()
+        
+        return {"message": "Settings updated successfully"}
+    except Exception as e:
+        logger.error(f"Error saving settings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audio/devices")
+async def get_audio_devices():
+    try:
+        devices = sd.query_devices()
+        return {"devices": [
+            {
+                "id": i,
+                "name": device["name"],
+                "input_channels": device["max_input_channels"],
+                "output_channels": device["max_output_channels"]
+            }
+            for i, device in enumerate(devices)
+            if device["max_input_channels"] > 0
+        ]}
+    except Exception as e:
+        logger.error(f"Error getting audio devices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/audio/start")
+async def start_audio(device_index: int):
+    try:
+        global is_recording
+        if is_recording:
+            return {"message": "Already recording"}
+        
+        sd.InputStream(
+            device=device_index,
             channels=2,
-            samplerate=16000,
-            blocksize=4096,
-            device=settings['device_index']
-        )
-        input_stream.start()
-        
-        # Start background workers
-        start_services()
-        
-        return jsonify({"status": "started"})
+            callback=audio_callback,
+            blocksize=1024,
+            samplerate=16000
+        ).start()
+        is_recording = True
+        return {"message": "Recording started"}
     except Exception as e:
         logger.error(f"Error starting audio: {e}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/audio/stop', methods=['POST'])
-def stop_audio():
+@app.post("/api/audio/stop")
+async def stop_audio():
     try:
-        stop_services()
-        return jsonify({"status": "stopped"})
+        global is_recording
+        is_recording = False
+        return {"message": "Recording stopped"}
     except Exception as e:
         logger.error(f"Error stopping audio: {e}")
-        return jsonify({"error": str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/audio/levels', methods=['GET'])
-def get_audio_levels():
-    with audio_lock:
-        return jsonify({
-            "levels": audio_levels,
-            "peak_levels": peak_levels
-        })
+@app.get("/api/transcription")
+async def get_transcription():
+    return {"transcription": current_transcription}
 
-@app.route('/api/transcription', methods=['GET'])
-def get_transcription():
-    if ollama_api:
-        return jsonify({
-            "transcription": ollama_api.get_transcription()
-        })
-    return jsonify({"transcription": ""})
+@app.post("/api/transcription/clear")
+async def clear_transcription():
+    global current_transcription, current_llm_response
+    current_transcription = ""
+    current_llm_response = ""
+    return {"message": "Transcription cleared"}
 
-@app.route('/api/transcription/clear', methods=['POST'])
-def clear_transcription():
-    if ollama_api:
-        ollama_api.clear_transcription()
-    return jsonify({"status": "cleared"})
+@app.get("/api/llm/response")
+async def get_llm_response():
+    return {"response": current_llm_response}
 
-@app.route('/api/llm/response', methods=['GET'])
-def get_llm_response():
-    if ollama_api:
-        return jsonify({
-            "response": ollama_api.get_responses()
-        })
-    return jsonify({"response": ""})
-
-@app.route('/api/llm/process', methods=['POST'])
-def process_transcription():
-    if ollama_api:
-        response = ollama_api.process_transcription(force=True)
-        return jsonify({"response": response})
-    return jsonify({"error": "Ollama API not initialized"}), 500
-
-@app.route('/api/ollama/models', methods=['GET'])
-def get_ollama_models():
+@app.post("/api/llm/process")
+async def process_transcription():
     try:
-        client = ollama.Client(host=settings['ollama_host'])
-        models = client.list()
-        return jsonify(models)
+        global current_llm_response
+        if not current_transcription:
+            raise HTTPException(status_code=400, detail="No transcription to process")
+        
+        if not ollama_api:
+            raise HTTPException(status_code=500, detail="Ollama API not initialized")
+        
+        response = ollama_api.generate(current_transcription)
+        current_llm_response = response
+        return {"message": "Transcription processed"}
     except Exception as e:
-        logger.error(f"Error getting Ollama models: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/api/whisper/models', methods=['GET'])
-def get_whisper_models():
-    model_dir = get_model_directory()
-    models = []
-    
-    if os.path.exists(model_dir):
-        for file in os.listdir(model_dir):
-            if file.endswith('.bin'):
-                models.append(file.replace('.bin', ''))
-    
-    return jsonify({"models": models})
-
-@app.route('/api/whisper/download', methods=['POST'])
-def download_whisper_model():
-    model_name = request.json.get('model_name')
-    # This would be a placeholder for the actual download logic
-    # In a real implementation, you'd download the model asynchronously
-    return jsonify({"status": "downloading", "model": model_name})
+        logger.error(f"Error processing transcription: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == '__main__':
+    import uvicorn
     try:
         # Load settings on startup
         logger.info("Loading settings...")
@@ -368,9 +289,8 @@ if __name__ == '__main__':
             logger.error(f"Failed to start services: {e}")
             # Continue without background workers for now
         
-        logger.info("Starting Flask server...")
-        # Run the Flask app with explicit host and port
-        app.run(host='127.0.0.1', port=5000, debug=True)
+        logger.info("Starting FastAPI server...")
+        uvicorn.run(app, host="127.0.0.1", port=5000)
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt, shutting down...")
     except Exception as e:
@@ -378,15 +298,4 @@ if __name__ == '__main__':
         raise
     finally:
         logger.info("Stopping services...")
-        stop_services()
-        # Clean up any remaining resources
-        if transcriber:
-            try:
-                transcriber.cleanup()
-            except:
-                pass
-        if ollama_api:
-            try:
-                ollama_api.cleanup()
-            except:
-                pass 
+        stop_services() 
