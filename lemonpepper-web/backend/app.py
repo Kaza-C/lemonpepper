@@ -24,7 +24,14 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}})
+CORS(app, resources={
+    r"/*": {
+        "origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5000", "http://127.0.0.1:5000"],
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
 
 # Global state
 transcriber = None
@@ -138,8 +145,14 @@ def initialize_transcriber():
 def initialize_ollama_api():
     global ollama_api
     
-    logger.info(f"Initializing OllamaAPI with host: {settings['ollama_host']} and model: {settings['ollama_model']}")
-    ollama_api = OllamaAPI(host=settings['ollama_host'], model=settings['ollama_model'])
+    try:
+        logger.info(f"Initializing OllamaAPI with host: {settings['ollama_host']} and model: {settings['ollama_model']}")
+        ollama_api = OllamaAPI(host=settings['ollama_host'], model=settings['ollama_model'])
+        logger.info("OllamaAPI initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize OllamaAPI: {e}", exc_info=True)
+        # Don't raise the exception, just log it and continue
+        ollama_api = None
 
 def start_services():
     global transcription_thread, processing_thread, is_transcribing
@@ -315,17 +328,42 @@ def download_whisper_model():
     return jsonify({"status": "downloading", "model": model_name})
 
 if __name__ == '__main__':
-    # Load settings on startup
-    load_settings()
-    
-    # Initialize components
-    initialize_ollama_api()
-    initialize_transcriber()
-    
-    # Start background workers
-    start_services()
-    
     try:
-        app.run(debug=True)
+        # Load settings on startup
+        logger.info("Loading settings...")
+        load_settings()
+        
+        # Initialize components
+        logger.info("Initializing Ollama API...")
+        try:
+            initialize_ollama_api()
+        except Exception as e:
+            logger.error(f"Failed to initialize Ollama API: {e}")
+            # Continue without Ollama for now
+            ollama_api = None
+        
+        logger.info("Initializing transcriber...")
+        try:
+            initialize_transcriber()
+        except Exception as e:
+            logger.error(f"Failed to initialize transcriber: {e}")
+            # Continue without transcriber for now
+            transcriber = None
+        
+        # Start background workers
+        logger.info("Starting background workers...")
+        try:
+            start_services()
+        except Exception as e:
+            logger.error(f"Failed to start services: {e}")
+            # Continue without background workers for now
+        
+        logger.info("Starting Flask server...")
+        # Run the Flask app with explicit host and port
+        app.run(host='127.0.0.1', port=5000, debug=True)
+    except Exception as e:
+        logger.error(f"Critical error starting server: {e}", exc_info=True)
+        raise
     finally:
+        logger.info("Stopping services...")
         stop_services() 
