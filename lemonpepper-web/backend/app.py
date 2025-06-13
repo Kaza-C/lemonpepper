@@ -1,29 +1,38 @@
-from flask import Flask, request, jsonify, Response
-from flask_cors import CORS
-import os
-import json
-import threading
-import time
-import logging
-import sounddevice as sd
-import numpy as np
-import ollama
-import queue
-import sys
-import appdirs
+import traceback
+try:
+    from flask import Flask, request, jsonify, Response
+    from flask_cors import CORS
+    import os
+    import json
+    import threading
+    import time
+    import logging
+    import sounddevice as sd
+    import numpy as np
+    import ollama
+    import queue
+    import appdirs
+    import sys
+    sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
+    from lemonpepper.transcribe_audio_whisper import WhisperStreamTranscriber
+    from lemonpepper.ollama_api import OllamaAPI
+    from lemonpepper.utils import get_model_directory
+except Exception:
+    print("IMPORT ERROR:")
+    traceback.print_exc()
+    exit(1)
 
-# Import lemonpepper modules
-sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'))
-from lemonpepper.transcribe_audio_whisper import WhisperStreamTranscriber
-from lemonpepper.ollama_api import OllamaAPI
-from lemonpepper.utils import get_model_directory
+print("Python path:", sys.path)
+print("Python executable:", sys.executable)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, 
+logging.basicConfig(level=logging.DEBUG, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+logger.debug("Flask app created")
+
 CORS(app, resources={
     r"/*": {
         "origins": ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:5000", "http://127.0.0.1:5000"],
@@ -32,6 +41,7 @@ CORS(app, resources={
         "supports_credentials": True
     }
 })
+logger.debug("CORS configured")
 
 # Global state
 transcriber = None
@@ -361,9 +371,22 @@ if __name__ == '__main__':
         logger.info("Starting Flask server...")
         # Run the Flask app with explicit host and port
         app.run(host='127.0.0.1', port=5000, debug=True)
+    except KeyboardInterrupt:
+        logger.info("Received keyboard interrupt, shutting down...")
     except Exception as e:
         logger.error(f"Critical error starting server: {e}", exc_info=True)
         raise
     finally:
         logger.info("Stopping services...")
-        stop_services() 
+        stop_services()
+        # Clean up any remaining resources
+        if transcriber:
+            try:
+                transcriber.cleanup()
+            except:
+                pass
+        if ollama_api:
+            try:
+                ollama_api.cleanup()
+            except:
+                pass 
