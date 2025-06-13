@@ -16,10 +16,11 @@ LemonPepper Web is a web application that captures audio input, transcribes it u
 - Adjustable audio settings including device selection and gain control
 - Copy-to-clipboard functionality for easy sharing of transcriptions and LLM responses
 - Experimental Text to Speech (TTS) support
+- Automatic API documentation with Swagger UI and ReDoc
 
 ## Project Structure
 
-- `backend/`: Flask backend providing REST APIs
+- `backend/`: FastAPI backend providing REST APIs
 - `frontend/`: React frontend application
 
 ## Prerequisites
@@ -50,10 +51,14 @@ LemonPepper Web is a web application that captures audio input, transcribes it u
    pip install -r requirements.txt
    ```
 
-4. Run the Flask server:
+4. Run the FastAPI server:
    ```
    python app.py
    ```
+
+5. Access the API documentation:
+   - Swagger UI: `http://localhost:5000/docs`
+   - ReDoc: `http://localhost:5000/redoc`
 
 ### Frontend Setup
 
@@ -107,5 +112,5 @@ Licensed under the Apache License, Version 2.0.
 - Whisper for offline speech recognition
 - Ollama for local LLM integration
 - React and Material UI for the frontend framework
-- Flask for the backend API
+- FastAPI for the backend API
 - pywhispercpp for python bindings to whisper.cpp 

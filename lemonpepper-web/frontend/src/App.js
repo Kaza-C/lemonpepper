@@ -3,7 +3,7 @@ import './App.css';
 import axios from 'axios';
 
 // Configure axios
-axios.defaults.baseURL = 'http://localhost:5000';
+axios.defaults.baseURL = 'http://localhost:8000';
 
 function App() {
   const [settings, setSettings] = useState({

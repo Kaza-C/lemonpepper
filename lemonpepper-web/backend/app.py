@@ -1,7 +1,9 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
+from typing import Optional
 import os
 import json
 import threading
@@ -23,16 +25,44 @@ logging.basicConfig(level=logging.DEBUG,
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# Create FastAPI app with CORS configuration
+app = FastAPI(
+    title="LemonPepper API",
+    description="API for LemonPepper audio transcription and LLM processing",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json"
+)
 
 # Configure CORS
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5000",
+    "http://127.0.0.1:5000",
+    "*"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+async def root():
+    return Response(
+        content='{"message": "Welcome to LemonPepper API", "docs": "/docs"}',
+        media_type="application/json",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 # Global state
 transcriber = None
@@ -44,14 +74,17 @@ current_llm_response = ""
 
 # Pydantic models for request/response validation
 class Settings(BaseModel):
-    ollama_host: str | None = None
-    ollama_model: str | None = None
-    device_index: int | None = None
-    transcription_method: str | None = None
-    whisper_model_path: str | None = None
-    gain: float | None = None
-    prompt_template: str | None = None
-    picovoice_access_key: str | None = None
+    ollama_host: Optional[str] = None
+    ollama_model: Optional[str] = None
+    device_index: Optional[int] = None
+    transcription_method: Optional[str] = None
+    whisper_model_path: Optional[str] = None
+    gain: Optional[float] = None
+    prompt_template: Optional[str] = None
+    picovoice_access_key: Optional[str] = None
+
+class AudioStartRequest(BaseModel):
+    device_index: int
 
 def get_settings_path():
     app_data_dir = appdirs.user_data_dir("lemonpepper", "lemonpepper")
@@ -196,14 +229,14 @@ async def get_audio_devices():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/audio/start")
-async def start_audio(device_index: int):
+async def start_audio(request: AudioStartRequest):
     try:
         global is_recording
         if is_recording:
             return {"message": "Already recording"}
         
         sd.InputStream(
-            device=device_index,
+            device=request.device_index,
             channels=2,
             callback=audio_callback,
             blocksize=1024,
