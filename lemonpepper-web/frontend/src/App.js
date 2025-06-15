@@ -66,11 +66,24 @@ function App() {
 
   const startTranscribing = async () => {
     try {
-      await axios.post('/api/audio/start', { device_index: settings.device_index });
-      setIsTranscribing(true);
+      if (!settings.device_index) {
+        alert('Please select an audio device first');
+        return;
+      }
+      
+      const response = await axios.post('/api/audio/start', { 
+        device_index: parseInt(settings.device_index) 
+      });
+      
+      if (response.data.message === "Recording started") {
+        setIsTranscribing(true);
+      } else {
+        alert(response.data.message || 'Failed to start transcription');
+      }
     } catch (error) {
       console.error('Error starting transcription:', error);
-      alert('Failed to start transcription');
+      const errorMessage = error.response?.data?.detail || error.message || 'Failed to start transcription';
+      alert(`Error: ${errorMessage}`);
     }
   };
 

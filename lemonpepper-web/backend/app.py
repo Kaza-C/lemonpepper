@@ -235,18 +235,51 @@ async def start_audio(request: AudioStartRequest):
         if is_recording:
             return {"message": "Already recording"}
         
-        sd.InputStream(
-            device=request.device_index,
-            channels=2,
-            callback=audio_callback,
-            blocksize=1024,
-            samplerate=16000
-        ).start()
-        is_recording = True
-        return {"message": "Recording started"}
+        logger.info(f"Starting audio recording with device index: {request.device_index}")
+        
+        # Validate device index
+        devices = sd.query_devices()
+        if request.device_index >= len(devices):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid device index. Available devices: {len(devices)}"
+            )
+        
+        # Check if device has input channels
+        device = devices[request.device_index]
+        if device['max_input_channels'] == 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Selected device has no input channels"
+            )
+        
+        try:
+            stream = sd.InputStream(
+                device=request.device_index,
+                channels=2,
+                callback=audio_callback,
+                blocksize=1024,
+                samplerate=16000
+            )
+            stream.start()
+            is_recording = True
+            logger.info("Audio recording started successfully")
+            return {"message": "Recording started"}
+        except Exception as e:
+            logger.error(f"Error starting audio stream: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to start audio stream: {str(e)}"
+            )
+            
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error starting audio: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in start_audio: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )
 
 @app.post("/api/audio/stop")
 async def stop_audio():
