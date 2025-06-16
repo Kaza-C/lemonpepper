@@ -75,6 +75,19 @@ current_transcription = ""
 current_llm_response = ""
 model = None
 cheetah = None
+current_stream = None  # Add this to track the current audio stream
+
+# Initialize settings with defaults
+settings = {
+    "ollama_host": "http://localhost:11434",
+    "ollama_model": "llama2",
+    "device_index": None,
+    "transcription_method": "whisper",
+    "whisper_model_path": "base",
+    "gain": 1.0,
+    "prompt_template": "",
+    "picovoice_access_key": ""
+}
 
 # Pydantic models for request/response validation
 class Settings(BaseModel):
@@ -115,24 +128,27 @@ def load_settings() -> dict:
     return {}
 
 def audio_callback(indata, frames, time, status):
+    """Callback function for audio stream"""
     if status:
         logger.warning(f"Audio callback status: {status}")
-    if is_recording:
-        try:
-            # Convert to mono if needed
-            if indata.shape[1] > 1:
-                audio_data = np.mean(indata, axis=1)
-            else:
-                audio_data = indata.flatten()
-            
-            # Check if audio data is not silent
-            if np.abs(audio_data).mean() > 0.01:  # Adjust threshold as needed
-                logger.info(f"Received audio data, mean amplitude: {np.abs(audio_data).mean()}")
-                audio_queue.put(audio_data.copy())
-            else:
-                logger.debug("Silent audio frame received")
-        except Exception as e:
-            logger.error(f"Error in audio callback: {str(e)}")
+    try:
+        # Apply gain
+        gain = settings.get("gain", 1.0)
+        audio_data = indata * gain
+        
+        # Convert to float32 if needed
+        if audio_data.dtype != np.float32:
+            audio_data = audio_data.astype(np.float32)
+        
+        # Normalize audio
+        if np.abs(audio_data).max() > 0:
+            audio_data = audio_data / np.abs(audio_data).max()
+        
+        # Put the processed audio data in the queue
+        audio_queue.put(audio_data)
+        logger.debug(f"Added {len(audio_data)} frames to queue. Queue size: {audio_queue.qsize()}")
+    except Exception as e:
+        logger.error(f"Error in audio callback: {str(e)}")
 
 def initialize_ollama_api():
     global ollama_api
@@ -200,33 +216,24 @@ def stop_services():
 # API Routes
 @app.get("/api/settings")
 async def get_settings():
-    try:
-        settings = load_settings()
-        logger.debug(f"Returning settings: {settings}")
-        return settings
-    except Exception as e:
-        logger.error(f"Error loading settings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return settings
 
 @app.post("/api/settings")
-async def update_settings(settings: Settings):
-    try:
-        current_settings = load_settings()
-        new_settings = settings.dict(exclude_unset=True)
-        current_settings.update(new_settings)
-        save_settings(current_settings)
-        
-        # Reinitialize components if necessary
-        if 'ollama_host' in new_settings or 'ollama_model' in new_settings:
-            initialize_ollama_api()
-        
-        if 'transcription_method' in new_settings or 'whisper_model_path' in new_settings:
-            initialize_transcriber()
-        
-        return {"message": "Settings updated successfully"}
-    except Exception as e:
-        logger.error(f"Error saving settings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+async def update_settings(new_settings: Settings):
+    global settings
+    # Update only the provided settings
+    for key, value in new_settings.dict(exclude_unset=True).items():
+        settings[key] = value
+    save_settings(settings)
+    
+    # Reinitialize components if necessary
+    if 'ollama_host' in new_settings or 'ollama_model' in new_settings:
+        initialize_ollama_api()
+    
+    if 'transcription_method' in new_settings or 'whisper_model_path' in new_settings:
+        initialize_transcriber()
+    
+    return settings
 
 @app.get("/api/audio/devices")
 async def get_audio_devices():
@@ -249,12 +256,27 @@ async def get_audio_devices():
 @app.post("/api/audio/start")
 async def start_audio(request: AudioStartRequest):
     try:
-        global is_recording, model, cheetah
+        global is_recording, model, cheetah, ollama_api, current_stream
         if is_recording:
             return {"message": "Already recording"}
         
         logger.info(f"Starting audio recording with device index: {request.device_index}")
-        logger.info(f"Current settings: {settings.dict()}")
+        logger.info(f"Current settings: {settings}")
+        
+        # Initialize Ollama API first
+        try:
+            logger.info("Initializing Ollama API...")
+            ollama_api = OllamaAPI(
+                host=settings["ollama_host"],
+                model=settings["ollama_model"]
+            )
+            logger.info("Ollama API initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Ollama API: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to initialize Ollama API: {str(e)}"
+            )
         
         # Validate device index
         devices = sd.query_devices()
@@ -274,16 +296,16 @@ async def start_audio(request: AudioStartRequest):
         
         try:
             # Initialize transcription model first
-            if not settings.transcription_method:
+            if not settings["transcription_method"]:
                 raise HTTPException(
                     status_code=400,
                     detail="No transcription method selected"
                 )
                 
-            logger.info(f"Using transcription method: {settings.transcription_method}")
+            logger.info(f"Using transcription method: {settings['transcription_method']}")
             
-            if settings.transcription_method == "whisper":
-                if not settings.whisper_model_path:
+            if settings["transcription_method"] == "whisper":
+                if not settings["whisper_model_path"]:
                     raise HTTPException(
                         status_code=400,
                         detail="Whisper model path not set in settings"
@@ -300,8 +322,8 @@ async def start_audio(request: AudioStartRequest):
                             status_code=500,
                             detail=f"Failed to initialize Whisper model: {str(e)}"
                         )
-            elif settings.transcription_method == "picovoice":
-                if not settings.picovoice_access_key:
+            elif settings["transcription_method"] == "picovoice":
+                if not settings["picovoice_access_key"]:
                     raise HTTPException(
                         status_code=400,
                         detail="Picovoice access key not set in settings"
@@ -321,7 +343,7 @@ async def start_audio(request: AudioStartRequest):
             else:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid transcription method: {settings.transcription_method}"
+                    detail=f"Invalid transcription method: {settings['transcription_method']}"
                 )
             
             # Use the device's actual number of input channels
@@ -330,15 +352,21 @@ async def start_audio(request: AudioStartRequest):
             
             # Start the audio stream
             try:
-                stream = sd.InputStream(
+                current_stream = sd.InputStream(
                     device=request.device_index,
                     channels=channels,
                     callback=audio_callback,
                     blocksize=1024,
                     samplerate=16000
                 )
-                stream.start()
+                current_stream.start()
                 is_recording = True
+                
+                # Start processing thread
+                processing_thread = threading.Thread(target=process_audio)
+                processing_thread.daemon = True
+                processing_thread.start()
+                
                 logger.info("Audio recording started successfully")
                 return {"message": "Recording started"}
             except Exception as e:
@@ -368,13 +396,39 @@ async def start_audio(request: AudioStartRequest):
 
 @app.post("/api/audio/stop")
 async def stop_audio():
+    global is_recording, current_stream
     try:
-        global is_recording
+        if not is_recording:
+            return {"message": "Not recording"}
+        
+        logger.info("Stopping audio recording...")
         is_recording = False
+        
+        # Stop the audio stream if it exists
+        if current_stream:
+            try:
+                current_stream.stop()
+                current_stream.close()
+                current_stream = None
+                logger.info("Audio stream stopped and closed")
+            except Exception as e:
+                logger.error(f"Error stopping audio stream: {str(e)}")
+        
+        # Clear the audio queue
+        while not audio_queue.empty():
+            try:
+                audio_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        logger.info("Audio recording stopped successfully")
         return {"message": "Recording stopped"}
     except Exception as e:
-        logger.error(f"Error stopping audio: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error stopping audio: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error stopping audio: {str(e)}"
+        )
 
 @app.get("/api/transcription")
 async def get_transcription():
@@ -411,11 +465,11 @@ async def process_transcription():
 def initialize_whisper():
     global model
     try:
-        if not settings.whisper_model_path:
+        if not settings["whisper_model_path"]:
             raise ValueError("Whisper model path not set in settings")
         
-        logger.info(f"Loading Whisper model from {settings.whisper_model_path}")
-        model = whisper.load_model(settings.whisper_model_path)
+        logger.info(f"Loading Whisper model from {settings['whisper_model_path']}")
+        model = whisper.load_model(settings["whisper_model_path"])
         logger.info("Whisper model loaded successfully")
     except Exception as e:
         logger.error(f"Error initializing Whisper: {str(e)}")
@@ -424,15 +478,101 @@ def initialize_whisper():
 def initialize_picovoice():
     global cheetah
     try:
-        if not settings.picovoice_access_key:
+        if not settings["picovoice_access_key"]:
             raise ValueError("Picovoice access key not set in settings")
         
         logger.info("Initializing Picovoice Cheetah")
-        cheetah = pvcheetah.create(access_key=settings.picovoice_access_key)
+        cheetah = pvcheetah.create(access_key=settings["picovoice_access_key"])
         logger.info("Picovoice Cheetah initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing Picovoice: {str(e)}")
         raise
+
+def process_audio():
+    """Process audio data from the queue"""
+    global current_transcription, current_llm_response
+    
+    try:
+        # Collect 3 seconds of audio (48000 samples at 16kHz)
+        audio_chunks = []
+        total_samples = 0
+        target_samples = 48000  # 3 seconds at 16kHz
+        
+        logger.info("Starting to collect audio chunks...")
+        
+        while total_samples < target_samples and is_recording:
+            try:
+                # Get audio data from queue with timeout
+                audio_data = audio_queue.get(timeout=1.0)
+                audio_chunks.append(audio_data)
+                total_samples += len(audio_data)
+                logger.debug(f"Collected {len(audio_data)} samples. Total: {total_samples}")
+            except queue.Empty:
+                logger.warning("Timeout waiting for audio data")
+                continue
+            except Exception as e:
+                logger.error(f"Error getting audio data: {str(e)}")
+                continue
+        
+        if not audio_chunks:
+            logger.warning("No audio chunks collected")
+            return
+        
+        # Combine all chunks
+        audio_data = np.concatenate(audio_chunks)
+        logger.info(f"Processing {len(audio_data)} samples of audio")
+        
+        # Process with selected transcription method
+        if settings["transcription_method"] == "whisper":
+            if not model:
+                logger.error("Whisper model not initialized")
+                return
+                
+            try:
+                # Convert to the format Whisper expects
+                audio_data = audio_data.reshape(-1)  # Ensure 1D array
+                logger.info("Running Whisper transcription...")
+                result = model.transcribe(audio_data)
+                new_transcription = result["text"].strip()
+                logger.info(f"Whisper transcription result: {new_transcription}")
+            except Exception as e:
+                logger.error(f"Error in Whisper transcription: {str(e)}")
+                return
+                
+        elif settings["transcription_method"] == "picovoice":
+            if not cheetah:
+                logger.error("Picovoice not initialized")
+                return
+                
+            try:
+                # Process with Picovoice
+                logger.info("Running Picovoice transcription...")
+                new_transcription = cheetah.process(audio_data)
+                logger.info(f"Picovoice transcription result: {new_transcription}")
+            except Exception as e:
+                logger.error(f"Error in Picovoice transcription: {str(e)}")
+                return
+        
+        # Update transcription if we got new text
+        if new_transcription:
+            current_transcription = new_transcription
+            logger.info(f"Updated transcription: {current_transcription}")
+            
+            # Get LLM response
+            try:
+                if not ollama_api:
+                    logger.error("Ollama API not initialized")
+                    return
+                    
+                logger.info("Getting LLM response...")
+                response = ollama_api.get_response(current_transcription)
+                current_llm_response = response
+                logger.info(f"LLM response: {current_llm_response}")
+            except Exception as e:
+                logger.error(f"Error getting LLM response: {str(e)}")
+        
+    except Exception as e:
+        logger.error(f"Error in process_audio: {str(e)}")
 
 if __name__ == '__main__':
     import uvicorn
