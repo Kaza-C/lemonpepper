@@ -9,7 +9,12 @@ function App() {
   const [settings, setSettings] = useState({
     ollama_host: 'http://localhost:11434',
     ollama_model: '',
-    device_index: null
+    device_index: null,
+    transcription_method: 'whisper',  // Default to whisper
+    whisper_model_path: 'base',       // Default to base model
+    gain: 1.0,
+    prompt_template: '',
+    picovoice_access_key: ''
   });
   const [audioDevices, setAudioDevices] = useState([]);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -213,10 +218,70 @@ function App() {
             placeholder="llama3.2"
           />
         </div>
+        <div className="form-group">
+          <label>Transcription Method:</label>
+          <select
+            value={settings.transcription_method}
+            onChange={(e) => setSettings({...settings, transcription_method: e.target.value})}
+          >
+            <option value="whisper">Whisper</option>
+            <option value="picovoice">Picovoice</option>
+          </select>
+        </div>
+        {settings.transcription_method === 'whisper' && (
+          <div className="form-group">
+            <label>Whisper Model:</label>
+            <select
+              value={settings.whisper_model_path}
+              onChange={(e) => setSettings({...settings, whisper_model_path: e.target.value})}
+            >
+              <option value="base">Base</option>
+              <option value="small">Small</option>
+              <option value="medium">Medium</option>
+              <option value="large">Large</option>
+            </select>
+          </div>
+        )}
+        {settings.transcription_method === 'picovoice' && (
+          <div className="form-group">
+            <label>Picovoice Access Key:</label>
+            <input
+              type="text"
+              value={settings.picovoice_access_key}
+              onChange={(e) => setSettings({...settings, picovoice_access_key: e.target.value})}
+              placeholder="Enter your Picovoice access key"
+            />
+          </div>
+        )}
+        <div className="form-group">
+          <label>Gain:</label>
+          <input
+            type="number"
+            value={settings.gain}
+            onChange={(e) => setSettings({...settings, gain: parseFloat(e.target.value)})}
+            step="0.1"
+            min="0.1"
+            max="10.0"
+          />
+        </div>
+        <div className="form-group">
+          <label>Prompt Template:</label>
+          <textarea
+            value={settings.prompt_template}
+            onChange={(e) => setSettings({...settings, prompt_template: e.target.value})}
+            placeholder="Enter your prompt template"
+            rows="4"
+          />
+        </div>
         <button 
           onClick={() => updateSettings({
             ollama_host: settings.ollama_host,
-            ollama_model: settings.ollama_model
+            ollama_model: settings.ollama_model,
+            transcription_method: settings.transcription_method,
+            whisper_model_path: settings.whisper_model_path,
+            gain: settings.gain,
+            prompt_template: settings.prompt_template,
+            picovoice_access_key: settings.picovoice_access_key
           })}
           className="btn-primary"
         >

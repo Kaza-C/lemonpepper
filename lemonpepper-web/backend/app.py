@@ -19,6 +19,8 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../..'
 from lemonpepper.transcribe_audio_whisper import WhisperStreamTranscriber
 from lemonpepper.ollama_api import OllamaAPI
 from lemonpepper.utils import get_model_directory
+import whisper
+import pvcheetah
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, 
@@ -71,6 +73,8 @@ audio_queue = queue.Queue()
 is_recording = False
 current_transcription = ""
 current_llm_response = ""
+model = None
+cheetah = None
 
 # Pydantic models for request/response validation
 class Settings(BaseModel):
@@ -114,7 +118,21 @@ def audio_callback(indata, frames, time, status):
     if status:
         logger.warning(f"Audio callback status: {status}")
     if is_recording:
-        audio_queue.put(indata.copy())
+        try:
+            # Convert to mono if needed
+            if indata.shape[1] > 1:
+                audio_data = np.mean(indata, axis=1)
+            else:
+                audio_data = indata.flatten()
+            
+            # Check if audio data is not silent
+            if np.abs(audio_data).mean() > 0.01:  # Adjust threshold as needed
+                logger.info(f"Received audio data, mean amplitude: {np.abs(audio_data).mean()}")
+                audio_queue.put(audio_data.copy())
+            else:
+                logger.debug("Silent audio frame received")
+        except Exception as e:
+            logger.error(f"Error in audio callback: {str(e)}")
 
 def initialize_ollama_api():
     global ollama_api
@@ -231,11 +249,12 @@ async def get_audio_devices():
 @app.post("/api/audio/start")
 async def start_audio(request: AudioStartRequest):
     try:
-        global is_recording
+        global is_recording, model, cheetah
         if is_recording:
             return {"message": "Already recording"}
         
         logger.info(f"Starting audio recording with device index: {request.device_index}")
+        logger.info(f"Current settings: {settings.dict()}")
         
         # Validate device index
         devices = sd.query_devices()
@@ -254,22 +273,88 @@ async def start_audio(request: AudioStartRequest):
             )
         
         try:
-            stream = sd.InputStream(
-                device=request.device_index,
-                channels=2,
-                callback=audio_callback,
-                blocksize=1024,
-                samplerate=16000
-            )
-            stream.start()
-            is_recording = True
-            logger.info("Audio recording started successfully")
-            return {"message": "Recording started"}
+            # Initialize transcription model first
+            if not settings.transcription_method:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No transcription method selected"
+                )
+                
+            logger.info(f"Using transcription method: {settings.transcription_method}")
+            
+            if settings.transcription_method == "whisper":
+                if not settings.whisper_model_path:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Whisper model path not set in settings"
+                    )
+                    
+                if not model:
+                    logger.info("Initializing Whisper model...")
+                    try:
+                        initialize_whisper()
+                        logger.info("Whisper model initialized successfully")
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Whisper model: {str(e)}")
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Failed to initialize Whisper model: {str(e)}"
+                        )
+            elif settings.transcription_method == "picovoice":
+                if not settings.picovoice_access_key:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Picovoice access key not set in settings"
+                    )
+                    
+                if not cheetah:
+                    logger.info("Initializing Picovoice...")
+                    try:
+                        initialize_picovoice()
+                        logger.info("Picovoice initialized successfully")
+                    except Exception as e:
+                        logger.error(f"Failed to initialize Picovoice: {str(e)}")
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Failed to initialize Picovoice: {str(e)}"
+                        )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid transcription method: {settings.transcription_method}"
+                )
+            
+            # Use the device's actual number of input channels
+            channels = device['max_input_channels']
+            logger.info(f"Using {channels} input channels for device {device['name']}")
+            
+            # Start the audio stream
+            try:
+                stream = sd.InputStream(
+                    device=request.device_index,
+                    channels=channels,
+                    callback=audio_callback,
+                    blocksize=1024,
+                    samplerate=16000
+                )
+                stream.start()
+                is_recording = True
+                logger.info("Audio recording started successfully")
+                return {"message": "Recording started"}
+            except Exception as e:
+                logger.error(f"Error starting audio stream: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to start audio stream: {str(e)}"
+                )
+            
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"Error starting audio stream: {str(e)}")
+            logger.error(f"Unexpected error in start_audio: {str(e)}")
             raise HTTPException(
                 status_code=500,
-                detail=f"Failed to start audio stream: {str(e)}"
+                detail=f"Unexpected error: {str(e)}"
             )
             
     except HTTPException:
@@ -322,6 +407,32 @@ async def process_transcription():
     except Exception as e:
         logger.error(f"Error processing transcription: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+def initialize_whisper():
+    global model
+    try:
+        if not settings.whisper_model_path:
+            raise ValueError("Whisper model path not set in settings")
+        
+        logger.info(f"Loading Whisper model from {settings.whisper_model_path}")
+        model = whisper.load_model(settings.whisper_model_path)
+        logger.info("Whisper model loaded successfully")
+    except Exception as e:
+        logger.error(f"Error initializing Whisper: {str(e)}")
+        raise
+
+def initialize_picovoice():
+    global cheetah
+    try:
+        if not settings.picovoice_access_key:
+            raise ValueError("Picovoice access key not set in settings")
+        
+        logger.info("Initializing Picovoice Cheetah")
+        cheetah = pvcheetah.create(access_key=settings.picovoice_access_key)
+        logger.info("Picovoice Cheetah initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing Picovoice: {str(e)}")
+        raise
 
 if __name__ == '__main__':
     import uvicorn
