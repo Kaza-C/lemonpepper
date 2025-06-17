@@ -197,4 +197,278 @@ button:disabled {
   .columns {
     flex-direction: column;
   }
+}
+
+.App {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  color: #e0e0e0;
+  background: #0f1a24;
+  min-height: 100vh;
+}
+
+.tabs {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+  border-bottom: 2px solid #1a2b3c;
+  padding-bottom: 1rem;
+}
+
+.tabs button {
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 500;
+  border: none;
+  background: none;
+  color: #8a9db3;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.tabs button:hover {
+  background: #1a2b3c;
+  color: #e0e0e0;
+}
+
+.tabs button.active {
+  background: #2c3e50;
+  color: white;
+}
+
+.settings, .transcription {
+  background: #1a2b3c;
+  border-radius: 12px;
+  padding: 2rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+h2 {
+  margin: 0 0 1.5rem 0;
+  color: #fff;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: #e0e0e0;
+}
+
+input, select, textarea {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #3d4f63;
+  border-radius: 8px;
+  font-size: 1rem;
+  transition: border-color 0.2s ease;
+  background: #2c3e50;
+  color: #e0e0e0;
+}
+
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: #4a6278;
+  box-shadow: 0 0 0 2px rgba(74, 98, 120, 0.2);
+}
+
+input::placeholder, textarea::placeholder {
+  color: #8a9db3;
+}
+
+button {
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 500;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: #2c3e50;
+  color: white;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #34495e;
+}
+
+button.secondary {
+  background: #1a2b3c;
+  color: #e0e0e0;
+  border: 1px solid #3d4f63;
+}
+
+button.secondary:hover:not(:disabled) {
+  background: #2c3e50;
+  border-color: #4a6278;
+}
+
+button.danger {
+  background: #c0392b;
+  color: white;
+}
+
+button.danger:hover:not(:disabled) {
+  background: #e74c3c;
+}
+
+.error-message {
+  background: #c0392b;
+  color: white;
+  padding: 1rem;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.transcription-controls {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.transcription-content {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+  margin-top: 1.5rem;
+}
+
+.transcription-box, .response-box {
+  background: #1a2b3c;
+  border-radius: 8px;
+  padding: 1.5rem;
+  min-height: 200px;
+  position: relative;
+  color: #fff;
+}
+
+.transcription-box h3, .response-box h3 {
+  margin: 0 0 1rem 0;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.transcription-text, .response-text {
+  white-space: pre-wrap;
+  line-height: 1.5;
+  color: #e0e0e0;
+}
+
+.transcription-text:empty::before, .response-text:empty::before {
+  content: "No content yet...";
+  color: #8a9db3;
+  font-style: italic;
+}
+
+.box-controls {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  gap: 0.5rem;
+}
+
+.box-controls button {
+  padding: 0.5rem;
+  font-size: 0.875rem;
+  background: #2c3e50;
+  border: 1px solid #3d4f63;
+  border-radius: 6px;
+  color: #fff;
+}
+
+.box-controls button:hover:not(:disabled) {
+  background: #34495e;
+  border-color: #4a6278;
+}
+
+.box-controls button:disabled {
+  background: #1a2b3c;
+  border-color: #2c3e50;
+  color: #4a6278;
+}
+
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-bottom: 1rem;
+}
+
+.status-indicator.recording {
+  background: #dc3545;
+  color: white;
+}
+
+.status-indicator.not-recording {
+  background: #28a745;
+  color: white;
+}
+
+.status-indicator::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-indicator.recording::before {
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .App {
+    padding: 1rem;
+  }
+  
+  .transcription-content {
+    grid-template-columns: 1fr;
+  }
+  
+  .transcription-controls {
+    flex-direction: column;
+  }
+  
+  .transcription-controls button {
+    width: 100%;
+  }
 } 
